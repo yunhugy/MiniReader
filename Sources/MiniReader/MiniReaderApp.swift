@@ -624,6 +624,12 @@ struct SearchCandidate: Identifiable {
     let href: String
 }
 
+struct ChapterCandidate: Identifiable {
+    let id = UUID()
+    let title: String
+    let href: String
+}
+
 struct BookSearchView: View {
     @EnvironmentObject private var store: ReaderStore
     @Environment(\.dismiss) private var dismiss
@@ -635,6 +641,7 @@ struct BookSearchView: View {
     @State private var status = ""
     @State private var running = false
     @State private var candidates: [SearchCandidate] = []
+    @State private var selectedBook: SearchCandidate?
 
     private var selectedSource: BookSource? {
         store.bookSources.first(where: { $0.id == selectedSourceID })
@@ -682,8 +689,7 @@ struct BookSearchView: View {
                 if !candidates.isEmpty {
                     List(candidates) { item in
                         Button {
-                            open(item.href)
-                            dismiss()
+                            selectedBook = item
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(item.sourceName).font(.caption2).foregroundStyle(.blue)
@@ -696,6 +702,9 @@ struct BookSearchView: View {
             }
             .navigationTitle("搜索小说")
             .navigationBarItems(leading: Button("关闭") { dismiss() })
+            .sheet(item: $selectedBook) { book in
+                BookDetailMVPView(book: book, openWeb: open)
+            }
         }
     }
 
@@ -793,5 +802,164 @@ struct BookSearchView: View {
             }
         }
         return result
+    }
+}
+
+struct BookDetailMVPView: View {
+    @Environment(\.dismiss) private var dismiss
+    let book: SearchCandidate
+    let openWeb: (String) -> Void
+    @State private var loading = false
+    @State private var status = ""
+    @State private var chapters: [ChapterCandidate] = []
+    @State private var selectedChapter: ChapterCandidate?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("小说") {
+                    Text(book.title).font(.headline)
+                    Text(book.sourceName).font(.caption).foregroundStyle(.blue)
+                    Text(book.href).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if loading { Section { ProgressView("正在解析目录…") } }
+                if !status.isEmpty { Section("状态") { Text(status).font(.caption) } }
+                Section("章节") {
+                    if chapters.isEmpty && !loading {
+                        Text("暂未解析到章节。可以先点右上角“网页打开”。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(chapters) { ch in
+                        Button { selectedChapter = ch } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(ch.title)
+                                Text(ch.href).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("目录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("网页打开") { openWeb(book.href); dismiss() } }
+            }
+            .task { await loadChapters() }
+            .sheet(item: $selectedChapter) { ch in
+                ChapterReaderMVPView(chapter: ch)
+            }
+        }
+    }
+
+    private func loadChapters() async {
+        guard chapters.isEmpty, let url = URL(string: book.href) else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            var req = URLRequest(url: url)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) else {
+                status = "页面解码失败"
+                return
+            }
+            chapters = extractChapters(html: html, base: url)
+            status = chapters.isEmpty ? "没识别到目录，后续要按阅读 3.0 ruleToc 精准解析。" : "识别到 \(chapters.count) 个章节"
+        } catch {
+            status = "目录解析失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func extractChapters(html: String, base: URL) -> [ChapterCandidate] {
+        var out: [ChapterCandidate] = []
+        let pattern = "<a[^>]*href=[\\\"']([^\\\"'#]+)[\\\"'][^>]*>(.*?)</a>"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return [] }
+        let ns = html as NSString
+        regex.enumerateMatches(in: html, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            guard let m = m, m.numberOfRanges >= 3 else { return }
+            let href = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            var title = ns.substring(with: m.range(at: 2))
+            title = title.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            title = title.replacingOccurrences(of: "&nbsp;", with: " ")
+            title = title.replacingOccurrences(of: "&amp;", with: "&")
+            title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let looksChapter = title.contains("章") || title.contains("回") || title.contains("节") || title.range(of: #"第.{1,12}[章节卷回]"#, options: .regularExpression) != nil
+            guard looksChapter, !href.isEmpty else { return }
+            let abs = URL(string: href, relativeTo: base)?.absoluteURL.absoluteString ?? href
+            if !out.contains(where: { $0.href == abs }) {
+                out.append(ChapterCandidate(title: title, href: abs))
+            }
+        }
+        return Array(out.prefix(300))
+    }
+}
+
+struct ChapterReaderMVPView: View {
+    @Environment(\.dismiss) private var dismiss
+    let chapter: ChapterCandidate
+    @State private var loading = false
+    @State private var status = ""
+    @State private var content = ""
+    @State private var fontSize: CGFloat = 20
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(chapter.title).font(.title3.bold())
+                    if loading { ProgressView("正在加载正文…") }
+                    if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
+                    Text(content.isEmpty ? "暂无正文" : content)
+                        .font(.system(size: fontSize))
+                        .lineSpacing(8)
+                        .textSelection(.enabled)
+                }
+                .padding()
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("正文")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack { Button("A-") { fontSize = max(14, fontSize - 1) }; Button("A+") { fontSize = min(30, fontSize + 1) } }
+                }
+            }
+            .task { await loadContent() }
+        }
+    }
+
+    private func loadContent() async {
+        guard content.isEmpty, let url = URL(string: chapter.href) else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            var req = URLRequest(url: url)
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) else { status = "正文解码失败"; return }
+            content = extractText(html: html)
+            status = content.count < 200 ? "正文较短/可能没识别准，后续要接 ruleContent。" : "已加载正文"
+        } catch {
+            status = "正文加载失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func extractText(html: String) -> String {
+        var s = html
+        if let r = s.range(of: #"<div[^>]+(?:id|class)=[\"'][^\"']*(?:content|chapter|read|article|text)[^\"']*[\"'][^>]*>"#, options: [.regularExpression, .caseInsensitive]) {
+            s = String(s[r.lowerBound...])
+        }
+        s = s.replacingOccurrences(of: "<script[\\s\\S]*?</script>", with: "", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<style[\\s\\S]*?</style>", with: "", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<(br|p|div|li|h[1-6])[^>]*>", with: "\n", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        let entities = ["&nbsp;":" ", "&amp;":"&", "&lt;":"<", "&gt;":">", "&quot;":"\"", "&#39;":"'"]
+        for (k,v) in entities { s = s.replacingOccurrences(of: k, with: v) }
+        s = s.replacingOccurrences(of: #"[ \t\r\f]+"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
