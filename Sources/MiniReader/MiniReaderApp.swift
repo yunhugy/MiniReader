@@ -32,15 +32,26 @@ struct BookSource: Identifiable, Codable, Equatable {
 
 struct BookSourceParser {
     static func parseMany(_ text: String) throws -> [BookSource] {
-        let data = Data(text.utf8)
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.hasPrefix("{") || cleaned.hasPrefix("[") else {
+            let preview = String(cleaned.prefix(80)).replacingOccurrences(of: "\n", with: " ")
+            throw NSError(domain: "MiniReader", code: 2, userInfo: [NSLocalizedDescriptionKey: "返回内容不是 JSON，可能是 404/网页/链接失效。开头：\(preview)"])
+        }
+        let data = Data(cleaned.utf8)
         let object = try JSONSerialization.jsonObject(with: data)
         let items: [Any]
         if let array = object as? [Any] {
             items = array
+        } else if let dict = object as? [String: Any], let array = dict["bookSources"] as? [Any] {
+            items = array
+        } else if let dict = object as? [String: Any], let array = dict["sources"] as? [Any] {
+            items = array
+        } else if let dict = object as? [String: Any], let array = dict["data"] as? [Any] {
+            items = array
         } else {
             items = [object]
         }
-        return try items.compactMap { item in
+        let sources = try items.compactMap { item -> BookSource? in
             guard let dict = item as? [String: Any] else { return nil }
             let rawData = try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
             let raw = String(data: rawData, encoding: .utf8) ?? "{}"
@@ -55,6 +66,10 @@ struct BookSourceParser {
             let search = dict["searchUrl"] as? String
             return BookSource(bookSourceName: name, bookSourceUrl: url, searchUrl: search, rawJSON: raw)
         }
+        guard !sources.isEmpty else {
+            throw NSError(domain: "MiniReader", code: 3, userInfo: [NSLocalizedDescriptionKey: "JSON 能读取，但里面没有识别到阅读 3.0 书源。"])
+        }
+        return sources
     }
 }
 
@@ -515,7 +530,10 @@ struct ImportBookSourceView: View {
             let jsonText: String
             if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
                 guard let url = URL(string: trimmed) else { throw NSError(domain: "MiniReader", code: 1, userInfo: [NSLocalizedDescriptionKey: "URL 无效"]) }
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    throw NSError(domain: "MiniReader", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "下载失败，HTTP \(http.statusCode)。这个书源链接可能失效或路径写错。"])
+                }
                 jsonText = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) ?? ""
             } else {
                 jsonText = trimmed
