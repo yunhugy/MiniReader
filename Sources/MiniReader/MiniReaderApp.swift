@@ -433,10 +433,8 @@ struct BookSourceListView: View {
                 }
             }
             .navigationTitle("阅读书源")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) { EditButton() }
-            }
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton() } }
             .sheet(item: $selected) { source in
                 BookSourceDetailView(source: source)
             }
