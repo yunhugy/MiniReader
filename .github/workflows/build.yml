@@ -5,6 +5,10 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   build:
     runs-on: macos-15
@@ -52,8 +56,24 @@ jobs:
           /usr/bin/zip -qry MiniReader-trollstore.ipa Payload
           ls -lh MiniReader-trollstore.ipa
 
-      - name: Upload IPA
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: MiniReader-trollstore-ipa
           path: MiniReader-trollstore.ipa
+
+      - name: Publish latest Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: MiniReader 最新版
+          body: |
+            MiniReader TrollStore 安装包。
+
+            下载下面的 MiniReader-trollstore.ipa，然后在文件 App 里分享给 TrollStore 安装。
+          files: MiniReader-trollstore.ipa
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
