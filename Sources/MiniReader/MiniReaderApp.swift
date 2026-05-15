@@ -1,6 +1,6 @@
 import SwiftUI
 import WebKit
-import SafariServices
+import UIKit
 
 struct ReaderSource: Identifiable, Codable, Equatable {
     let id: UUID
@@ -117,7 +117,6 @@ struct ContentView: View {
             .sheet(isPresented: $showAddSource) { AddSourceView() }
             .onAppear { addressText = currentURL.absoluteString }
             .statusBarHidden(fullScreen)
-            .onTapGesture(count: 2) { fullScreen.toggle() }
         }
     }
 
