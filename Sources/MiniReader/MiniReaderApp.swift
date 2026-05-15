@@ -125,6 +125,7 @@ struct ContentView: View {
     @State private var showAddSource = false
     @State private var showBookSources = false
     @State private var showImportBookSource = false
+    @State private var showBookSearch = false
     @State private var fullScreen = false
 
     var body: some View {
@@ -162,6 +163,7 @@ struct ContentView: View {
                         Button("添加网页入口", systemImage: "plus") { showAddSource = true }
                         Button("阅读书源 JSON", systemImage: "doc.text.magnifyingglass") { showBookSources = true }
                         Button("导入书源 JSON", systemImage: "square.and.arrow.down") { showImportBookSource = true }
+                        Button("书源搜索", systemImage: "magnifyingglass.circle") { showBookSearch = true }
                         Button("设为首页", systemImage: "house") { setCurrentAsHome() }
                         Button("Safari 打开", systemImage: "safari") { openInSafari() }
                         Button(fullScreen ? "退出全屏" : "全屏阅读", systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { fullScreen.toggle() }
@@ -180,6 +182,7 @@ struct ContentView: View {
             .sheet(isPresented: $showAddSource) { AddSourceView() }
             .sheet(isPresented: $showBookSources) { BookSourceListView() }
             .sheet(isPresented: $showImportBookSource) { ImportBookSourceView() }
+            .sheet(isPresented: $showBookSearch) { BookSearchView(open: openURLString) }
             .onAppear { addressText = currentURL.absoluteString }
             .statusBarHidden(fullScreen)
         }
@@ -530,5 +533,165 @@ struct ImportBookSourceView: View {
         } catch {
             message = "导入失败：\(error.localizedDescription)"
         }
+    }
+}
+
+struct SearchCandidate: Identifiable {
+    let id = UUID()
+    let title: String
+    let href: String
+}
+
+struct BookSearchView: View {
+    @EnvironmentObject private var store: ReaderStore
+    @Environment(\.dismiss) private var dismiss
+    let open: (String) -> Void
+
+    @State private var selectedSourceID: UUID?
+    @State private var keyword = ""
+    @State private var searchURL = ""
+    @State private var status = ""
+    @State private var running = false
+    @State private var candidates: [SearchCandidate] = []
+
+    private var selectedSource: BookSource? {
+        store.bookSources.first(where: { $0.id == selectedSourceID })
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Form {
+                    Section("书源") {
+                        if store.bookSources.isEmpty {
+                            Text("暂无已导入 JSON 书源，请先导入。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("选择书源", selection: Binding(
+                                get: { selectedSourceID ?? store.bookSources.first?.id },
+                                set: { selectedSourceID = $0 }
+                            )) {
+                                ForEach(store.bookSources) { s in
+                                    Text(s.bookSourceName).tag(Optional(s.id))
+                                }
+                            }
+                        }
+                    }
+
+                    Section("关键词") {
+                        TextField("输入小说名", text: $keyword)
+                        Button(running ? "搜索中…" : "开始搜索") { Task { await runSearch() } }
+                            .disabled(running || keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.bookSources.isEmpty)
+                    }
+
+                    if !searchURL.isEmpty {
+                        Section("搜索 URL") {
+                            Text(searchURL).font(.caption2).textSelection(.enabled)
+                        }
+                    }
+
+                    if !status.isEmpty {
+                        Section("状态") { Text(status).font(.caption) }
+                    }
+                }
+
+                if !candidates.isEmpty {
+                    List(candidates) { item in
+                        Button {
+                            open(item.href)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title.isEmpty ? "(无标题)" : item.title)
+                                Text(item.href).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("书源搜索")
+            .navigationBarItems(leading: Button("关闭") { dismiss() })
+            .onAppear {
+                if selectedSourceID == nil { selectedSourceID = store.bookSources.first?.id }
+            }
+        }
+    }
+
+    private func buildSearchURL(source: BookSource, keyword: String) -> String {
+        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+        let template = source.searchUrl ?? source.bookSourceUrl
+        return template
+            .replacingOccurrences(of: "{{key}}", with: encoded)
+            .replacingOccurrences(of: "{{keyword}}", with: encoded)
+            .replacingOccurrences(of: "{{searchKey}}", with: encoded)
+    }
+
+    private func absoluteURL(base: URL, href: String) -> String {
+        if let u = URL(string: href), u.scheme != nil { return u.absoluteString }
+        if let u = URL(string: href, relativeTo: base)?.absoluteURL { return u.absoluteString }
+        return href
+    }
+
+    private func runSearch() async {
+        guard let source = selectedSource else {
+            status = "请先选择书源"
+            return
+        }
+        let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            status = "请输入关键词"
+            return
+        }
+        let urlString = buildSearchURL(source: source, keyword: key)
+        searchURL = urlString
+        guard let url = URL(string: urlString) else {
+            status = "搜索 URL 无效"
+            return
+        }
+
+        running = true
+        defer { running = false }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) else {
+                status = "响应解码失败"
+                return
+            }
+
+            let matches = htmlMatches(in: html)
+            let base = URL(string: source.bookSourceUrl) ?? url
+            candidates = matches.prefix(60).map { m in
+                SearchCandidate(title: m.0, href: absoluteURL(base: base, href: m.1))
+            }
+            status = "抓取成功：候选 \(candidates.count) 条（MVP 粗匹配）"
+        } catch {
+            status = "搜索失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func htmlMatches(in html: String) -> [(String, String)] {
+        var result: [(String, String)] = []
+        let pattern = "<a[^>]*href=[\\\"']([^\\\"'#]+)[\\\"'][^>]*>(.*?)</a>"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return result
+        }
+        let ns = html as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        regex.enumerateMatches(in: html, options: [], range: range) { m, _, _ in
+            guard let m = m, m.numberOfRanges >= 3 else { return }
+            let href = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            var title = ns.substring(with: m.range(at: 2))
+            title = title.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            title = title.replacingOccurrences(of: "&nbsp;", with: " ")
+            title = title.replacingOccurrences(of: "&amp;", with: "&")
+            title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !href.isEmpty else { return }
+            if title.count > 0 {
+                result.append((title, href))
+            }
+        }
+        return result
     }
 }
