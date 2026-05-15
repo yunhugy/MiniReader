@@ -24,12 +24,13 @@ final class ReaderStore: ObservableObject {
            !decoded.isEmpty {
             sources = decoded
         } else {
-            sources = [
+            let defaultSources = [
                 ReaderSource(name: "栖阅", url: "https://arekert.github.io/read/"),
                 ReaderSource(name: "GitHub", url: "https://github.com/AREKERT/read/releases")
             ]
+            sources = defaultSources
         }
-        homeURL = UserDefaults.standard.string(forKey: "homeURL") ?? sources[0].url
+        homeURL = UserDefaults.standard.string(forKey: "homeURL") ?? "https://arekert.github.io/read/"
     }
 
     private func saveSources() {
