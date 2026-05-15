@@ -497,7 +497,7 @@ struct ImportBookSourceView: View {
                 }
             }
             .navigationTitle("导入书源 JSON")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } } }
         }
     }
 
