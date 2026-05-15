@@ -142,27 +142,32 @@ struct ContentView: View {
     @State private var showImportBookSource = false
     @State private var showBookSearch = false
     @State private var fullScreen = false
+    @State private var showWeb = false
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
-                WebView(
-                    url: currentURL,
-                    reloadToken: reloadToken,
-                    goBackToken: goBackToken,
-                    goForwardToken: goForwardToken,
-                    pageTitle: $pageTitle,
-                    canGoBack: $canGoBack,
-                    canGoForward: $canGoForward,
-                    loading: $loading
-                )
-                .ignoresSafeArea(edges: fullScreen ? .all : .bottom)
+                if showWeb {
+                    WebView(
+                        url: currentURL,
+                        reloadToken: reloadToken,
+                        goBackToken: goBackToken,
+                        goForwardToken: goForwardToken,
+                        pageTitle: $pageTitle,
+                        canGoBack: $canGoBack,
+                        canGoForward: $canGoForward,
+                        loading: $loading
+                    )
+                    .ignoresSafeArea(edges: fullScreen ? .all : .bottom)
 
-                if !fullScreen {
-                    bottomBar
+                    if !fullScreen {
+                        bottomBar
+                    }
+                } else {
+                    nativeHome
                 }
             }
-            .navigationTitle(pageTitle.isEmpty ? "MiniReader" : pageTitle)
+            .navigationTitle(showWeb ? (pageTitle.isEmpty ? "MiniReader" : pageTitle) : "MiniReader")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
             .toolbar {
@@ -179,9 +184,12 @@ struct ContentView: View {
                         Button("阅读书源 JSON", systemImage: "doc.text.magnifyingglass") { showBookSources = true }
                         Button("导入书源 JSON", systemImage: "square.and.arrow.down") { showImportBookSource = true }
                         Button("书源搜索", systemImage: "magnifyingglass.circle") { showBookSearch = true }
-                        Button("设为首页", systemImage: "house") { setCurrentAsHome() }
-                        Button("Safari 打开", systemImage: "safari") { openInSafari() }
-                        Button(fullScreen ? "退出全屏" : "全屏阅读", systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { fullScreen.toggle() }
+                        if showWeb {
+                            Button("返回首页", systemImage: "house") { showWeb = false; fullScreen = false }
+                            Button("设为网页首页", systemImage: "house") { setCurrentAsHome() }
+                            Button("Safari 打开", systemImage: "safari") { openInSafari() }
+                            Button(fullScreen ? "退出全屏" : "全屏阅读", systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") { fullScreen.toggle() }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -200,6 +208,60 @@ struct ContentView: View {
             .sheet(isPresented: $showBookSearch) { BookSearchView(open: openURLString) }
             .onAppear { addressText = currentURL.absoluteString }
             .statusBarHidden(fullScreen)
+        }
+    }
+
+    private var nativeHome: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("这不是网页壳了")
+                        .font(.title2.bold())
+                    Text("导入书源后，请点下面的“搜索小说”，输入书名。现在先显示搜索结果链接；下一步继续做详情、目录、正文阅读。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+            }
+
+            Section("书源") {
+                HStack {
+                    Label("已导入书源", systemImage: "doc.text")
+                    Spacer()
+                    Text("\(store.bookSources.count) 个").foregroundStyle(.secondary)
+                }
+                Button { showImportBookSource = true } label: {
+                    Label("导入阅读 3.0 JSON", systemImage: "square.and.arrow.down")
+                }
+                Button { showBookSources = true } label: {
+                    Label("查看已导入书源", systemImage: "list.bullet.rectangle")
+                }
+            }
+
+            Section("找小说") {
+                Button { showBookSearch = true } label: {
+                    Label("搜索小说", systemImage: "magnifyingglass")
+                        .font(.headline)
+                }
+                if store.bookSources.isEmpty {
+                    Text("先导入书源，否则搜索不到小说。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("已导入书源后，从这里输入小说名搜索。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("网页模式") {
+                Button { openURLString(store.homeURL) } label: {
+                    Label("打开网页阅读入口", systemImage: "safari")
+                }
+                Text("网页模式只是备用，不再作为默认首页。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -231,6 +293,7 @@ struct ContentView: View {
         if let url = URL(string: normalized) {
             currentURL = url
             addressText = normalized
+            showWeb = true
         }
     }
 
