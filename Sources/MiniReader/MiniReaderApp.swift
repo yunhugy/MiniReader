@@ -619,6 +619,7 @@ struct ImportBookSourceView: View {
 
 struct SearchCandidate: Identifiable {
     let id = UUID()
+    let sourceName: String
     let title: String
     let href: String
 }
@@ -649,10 +650,11 @@ struct BookSearchView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Picker("选择书源", selection: Binding(
-                                get: { selectedSourceID ?? store.bookSources.first?.id },
+                            Picker("搜索范围", selection: Binding(
+                                get: { selectedSourceID },
                                 set: { selectedSourceID = $0 }
                             )) {
+                                Text("全部可搜索书源").tag(Optional<UUID>.none)
                                 ForEach(store.bookSources) { s in
                                     Text(s.bookSourceName).tag(Optional(s.id))
                                 }
@@ -684,6 +686,7 @@ struct BookSearchView: View {
                             dismiss()
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
+                                Text(item.sourceName).font(.caption2).foregroundStyle(.blue)
                                 Text(item.title.isEmpty ? "(无标题)" : item.title)
                                 Text(item.href).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
@@ -691,11 +694,8 @@ struct BookSearchView: View {
                     }
                 }
             }
-            .navigationTitle("书源搜索")
+            .navigationTitle("搜索小说")
             .navigationBarItems(leading: Button("关闭") { dismiss() })
-            .onAppear {
-                if selectedSourceID == nil { selectedSourceID = store.bookSources.first?.id }
-            }
         }
     }
 
@@ -715,44 +715,53 @@ struct BookSearchView: View {
     }
 
     private func runSearch() async {
-        guard let source = selectedSource else {
-            status = "请先选择书源"
-            return
-        }
         let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             status = "请输入关键词"
             return
         }
-        let urlString = buildSearchURL(source: source, keyword: key)
-        searchURL = urlString
-        guard let url = URL(string: urlString) else {
-            status = "搜索 URL 无效"
+
+        let targets: [BookSource]
+        if let id = selectedSourceID, let one = store.bookSources.first(where: { $0.id == id }) {
+            targets = [one]
+        } else {
+            targets = Array(store.bookSources.filter { (($0.searchUrl ?? "").contains("{{key}}") || ($0.searchUrl ?? "").contains("{{keyword}}") || ($0.searchUrl ?? "").contains("{{searchKey}}")) }.prefix(8))
+        }
+        guard !targets.isEmpty else {
+            status = "没有可直接搜索的书源。这个源可能需要 JS/Cookie 规则，下一步继续适配 ruleSearch。"
             return
         }
 
         running = true
+        candidates = []
         defer { running = false }
 
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) else {
-                status = "响应解码失败"
-                return
+        var all: [SearchCandidate] = []
+        for source in targets {
+            let urlString = buildSearchURL(source: source, keyword: key)
+            searchURL = selectedSourceID == nil ? "全部搜索：\(targets.count) 个书源" : urlString
+            guard let url = URL(string: urlString) else { continue }
+            do {
+                var req = URLRequest(url: url)
+                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
+                let (data, _) = try await URLSession.shared.data(for: req)
+                guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) else { continue }
+                let matches = htmlMatches(in: html, keyword: key)
+                let base = URL(string: source.bookSourceUrl) ?? url
+                for m in matches.prefix(20) {
+                    all.append(SearchCandidate(sourceName: source.bookSourceName, title: m.0, href: absoluteURL(base: base, href: m.1)))
+                }
+                candidates = Array(all.prefix(80))
+                status = "正在搜索：已找到 \(candidates.count) 条"
+            } catch {
+                continue
             }
-
-            let matches = htmlMatches(in: html)
-            let base = URL(string: source.bookSourceUrl) ?? url
-            candidates = matches.prefix(60).map { m in
-                SearchCandidate(title: m.0, href: absoluteURL(base: base, href: m.1))
-            }
-            status = "抓取成功：候选 \(candidates.count) 条（MVP 粗匹配）"
-        } catch {
-            status = "搜索失败：\(error.localizedDescription)"
         }
+        candidates = Array(all.prefix(80))
+        status = candidates.isEmpty ? "没搜到结果。可能该书源需要完整 ruleSearch/JS/Cookie 解析，继续开发中。" : "搜索完成：\(candidates.count) 条"
     }
 
-    private func htmlMatches(in html: String) -> [(String, String)] {
+    private func htmlMatches(in html: String, keyword: String) -> [(String, String)] {
         var result: [(String, String)] = []
         let pattern = "<a[^>]*href=[\\\"']([^\\\"'#]+)[\\\"'][^>]*>(.*?)</a>"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
@@ -768,9 +777,19 @@ struct BookSearchView: View {
             title = title.replacingOccurrences(of: "&nbsp;", with: " ")
             title = title.replacingOccurrences(of: "&amp;", with: "&")
             title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !href.isEmpty else { return }
-            if title.count > 0 {
+            guard !href.isEmpty, !title.isEmpty else { return }
+            if title.localizedCaseInsensitiveContains(keyword) || href.localizedCaseInsensitiveContains(keyword) {
                 result.append((title, href))
+            }
+        }
+        if result.isEmpty {
+            regex.enumerateMatches(in: html, options: [], range: range) { m, _, _ in
+                guard let m = m, m.numberOfRanges >= 3, result.count < 30 else { return }
+                let href = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                var title = ns.substring(with: m.range(at: 2))
+                title = title.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !href.isEmpty, title.count >= 2 { result.append((title, href)) }
             }
         }
         return result
