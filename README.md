@@ -4,8 +4,9 @@
 
 - 默认打开：`https://arekert.github.io/read/`
 - App 内右上角「地址」可改成你的 VPS/PWA 地址
-- iOS Deployment Target：16.0
+- iOS Deployment Target：16.0，适配 iPhone 13 / iOS 16.0.1
 - Bundle ID：`com.yunhugy.minireader`
+- 使用 XcodeGen 在 GitHub Actions 里生成 `MiniReader.xcodeproj`
 
 ## GitHub Actions
 
