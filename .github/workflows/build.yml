@@ -1,0 +1,50 @@
+name: Build TrollStore IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Generate Xcode project
+        run: swift package generate-xcodeproj || true
+
+      - name: Build app without signing
+        run: |
+          xcodebuild \
+            -scheme MiniReader \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            INFOPLIST_FILE=Info.plist \
+            PRODUCT_BUNDLE_IDENTIFIER=com.yunhugy.minireader \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            build
+
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find build -path '*/Release-iphoneos/*.app' -type d | head -n 1)
+          test -n "$APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/MiniReader.app
+          /usr/bin/zip -qry MiniReader-trollstore.ipa Payload
+          ls -lh MiniReader-trollstore.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniReader-trollstore-ipa
+          path: MiniReader-trollstore.ipa
