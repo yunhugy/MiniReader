@@ -415,7 +415,13 @@ struct BookSourceListView: View {
         NavigationStack {
             List {
                 if store.bookSources.isEmpty {
-                    ContentUnavailableView("暂无阅读书源", systemImage: "doc.text", description: Text("从右上角导入阅读 3.0 JSON 书源"))
+                    VStack(spacing: 10) {
+                        Image(systemName: "doc.text").font(.largeTitle).foregroundStyle(.secondary)
+                        Text("暂无阅读书源").font(.headline)
+                        Text("从右上角导入阅读 3.0 JSON 书源").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 40)
                 } else {
                     ForEach(store.bookSources) { source in
                         Button { selected = source } label: {
